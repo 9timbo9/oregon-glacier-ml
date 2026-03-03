@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# Large data
+*.tif
+*.tiff
+*.h5
+*.pth
+*.pt
+*.npz
+data/
+patches/
+models/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
