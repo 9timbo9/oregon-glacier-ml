@@ -336,7 +336,7 @@ def main():
 
             # Thresholding – adjust after retraining!
             # mask = prob >= 0.5
-            print("prob percentiles:", np.percentile(prob, [0,1,5,25,50,75,95,99,100]))
+            # print("prob percentiles:", np.percentile(prob, [0,1,5,25,50,75,95,99,100]))
             mask = clean_mask(mask, min_pixels=500)   # ~0.05 km² at 30 m
 
             # Measurements (unchanged)
