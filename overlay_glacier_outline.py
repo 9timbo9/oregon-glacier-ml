@@ -10,7 +10,7 @@ except:
     TQDM_OK = False
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-YEARS = ['1980','2000','2020','Wallowas']
+YEARS = ['1980','2000','2020']
 YEAR = YEARS[2]   # change as needed
 
 MASK_DIR = SCRIPT_DIR / "outputs" / YEAR
@@ -55,12 +55,12 @@ def main():
 
         # Ensure same size
         if mask.shape != rgb.shape[:2]:
-            mask = transform.resize(mask.astype(float), rgb.shape[:2],
-                                    order=0, preserve_range=True).astype(bool)
+            print(f"SHAPE MISMATCH for {patch_id}: mask {mask.shape} vs rgb {rgb.shape[:2]} — SKIPPING")
+            continue
 
         contours = get_contours(mask, min_length=50)
         out_path = OUT_DIR / f"overlay_{patch_id}.png"
-        save_overlay(rgb, contours, out_path, linewidth=2, color='yellow')
+        save_overlay(rgb, contours, out_path, linewidth=2, color='red')
         print(f"Saved {out_path}")
 
 if __name__ == "__main__":

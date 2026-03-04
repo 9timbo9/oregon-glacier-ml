@@ -28,11 +28,11 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-YEARS = ['1980','2000','2020','Wallowas']  # add 'Wallowas' if you have those patches, otherwise just use the first three years
+YEARS = ['1980','2000','2020']  # add 'Wallowas' if you have those patches, otherwise just use the first three years
 
 MODEL_PATH = SCRIPT_DIR / "models" / "glacier_unet_pseudolabel.pt"
-NPZ_PATH   = SCRIPT_DIR / "patches" /YEARS[3]/ "patch_001_arrays.npz"
-META_PATH  = SCRIPT_DIR / "patches" /YEARS[3]/ "patch_001_meta.txt"
+NPZ_PATH   = SCRIPT_DIR / "patches" /YEARS[2]/ "patch_001_arrays.npz"
+META_PATH  = SCRIPT_DIR / "patches" /YEARS[2]/ "patch_001_meta.txt"
 
 DEM_PATH = SCRIPT_DIR / "data" /"DEM" / "output_hh.tif"
 USE_SLOPE = True
@@ -222,21 +222,33 @@ def robust_norm(x: np.ndarray, p1=2, p2=98) -> np.ndarray:
     y = (x - lo) / (hi - lo + 1e-6)
     return np.clip(y, 0, 1).astype(np.float32)
 
-def terrain_slope_aspect(dem_m: np.ndarray):
+def terrain_slope_aspect(dem_m, pixel_width, pixel_height):
     dem = dem_m.copy()
     nanmask = np.isnan(dem)
     if nanmask.any():
         dem[nanmask] = np.nanmedian(dem)
 
-    dz_dy, dz_dx = np.gradient(dem)
-
-    slope_deg = np.degrees(np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))).astype(np.float32)
-
+    dz_dy, dz_dx = np.gradient(dem, pixel_height, pixel_width)
+    slope_deg = np.degrees(np.arctan(np.sqrt(dz_dx**2 + dz_dy**2)))
     aspect_rad = np.arctan2(-dz_dx, dz_dy)
     aspect_deg = (np.degrees(aspect_rad) + 360) % 360
-    aspect_deg = aspect_deg.astype(np.float32)
+    return slope_deg.astype(np.float32), aspect_deg.astype(np.float32)
 
-    return slope_deg, aspect_deg
+def qa_good_from_qapixel(qa: np.ndarray) -> np.ndarray:
+    qa = qa.astype(np.uint16)
+    fill    = (qa & (1 << 0)) != 0
+    dilated = (qa & (1 << 1)) != 0
+    cirrus  = (qa & (1 << 2)) != 0
+    cloud   = (qa & (1 << 3)) != 0
+    shadow  = (qa & (1 << 4)) != 0
+    water   = (qa & (1 << 7)) != 0  # optional
+
+    # IMPORTANT: do NOT remove snow (bit 5). We WANT snow/ice pixels.
+    good = ~(fill | dilated | cirrus | cloud | shadow)
+
+    # optional: remove water too (often fine for glaciers)
+    good = good & ~water
+    return good
 
 def aspect_to_sin_cos(aspect_deg: np.ndarray):
     ang = np.deg2rad(aspect_deg.astype(np.float32))
@@ -253,26 +265,21 @@ def crop_to_match(a, ref):
     return a[top:top+rH, left:left+rW]
 
 def main():
-    # Load model once (outside loop)
+    # Load model (after retraining with 9 channels)
     ckpt = torch.load(MODEL_PATH, map_location="cpu")
-    in_ch = 4 + 1 + (1 if USE_SLOPE else 0) + (2 if USE_ASPECT else 0)  # 8
-    model = UNetSmall(in_ch=in_ch, out_ch=1, base=32).to(DEVICE)   
+    in_ch = 5 + 1 + (1 if USE_SLOPE else 0) + (2 if USE_ASPECT else 0)  # =9
+    model = UNetSmall(in_ch=in_ch, out_ch=1, base=32).to(DEVICE)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
-    # Find all patch array files
-    YEARS = ['1980','2000','2020','Wallowas']  # add 'Wallowas' if you have those patches, otherwise just use the first three years
-    patch_files = sorted(SCRIPT_DIR.glob(f"patches/{YEARS[3]}/patch_*_arrays.npz"))
+    patch_files = sorted(SCRIPT_DIR.glob(f"patches/{YEARS[2]}/patch_*_arrays.npz"))
     if not patch_files:
         print("No patch files found.")
         return
 
-    results = []  # to collect data for CSV
+    results = []
 
-    # Open DEM once for all patches (faster)
-    
     with rasterio.open(DEM_PATH) as dem_src:
-
         for npz_path in patch_files:
             meta_path = npz_path.with_name(npz_path.name.replace("_arrays.npz", "_meta.txt"))
             if not meta_path.exists():
@@ -281,61 +288,66 @@ def main():
 
             print(f"\nProcessing {npz_path.stem} ...")
 
-            # Load patch arrays
             d = np.load(npz_path)
-            rgb = d["rgb"].astype(np.float32)      # (H,W,3)
-            ndsi = d["ndsi"].astype(np.float32)    # (H,W)
+            green = d["green"].astype(np.float32)
+            red   = d["red"].astype(np.float32)
+            nir   = d["nir"].astype(np.float32)
+            swir1 = d["swir1"].astype(np.float32)
+            ndsi  = d["ndsi"].astype(np.float32)
 
-            # Read meta bounds
             meta = parse_meta(meta_path)
             H, W = ndsi.shape
 
-            # --- DEM -> patch grid ---
+            # DEM and derivatives
             dem_patch = sample_dem_to_patch(dem_src, meta, H, W)
-            dem_norm = robust_norm(dem_patch)
+            dem_km = dem_patch / 1000.0
+            extras = [dem_km[..., None]]
+            px_w_m, px_h_m = meters_per_pixel(meta, H, W)
 
-            extras = [dem_norm[..., None]]
-
-            slope_deg, aspect_deg = terrain_slope_aspect(dem_patch)
+            slope_deg, aspect_deg = terrain_slope_aspect(dem_patch, px_w_m, px_h_m)
 
             if USE_SLOPE:
-                slope_norm = robust_norm(slope_deg)
-                extras.append(slope_norm[..., None])
-
+                extras.append(slope_deg[..., None])
             if USE_ASPECT:
                 a_sin, a_cos = aspect_to_sin_cos(aspect_deg)
                 extras.append(a_sin[..., None])
                 extras.append(a_cos[..., None])
 
-            extra_stack = np.concatenate(extras, axis=2)  # (H,W,4) if slope+aspect
+            extra_stack = np.concatenate(extras, axis=2)
 
-            # Build 8-channel input: RGB + NDSI + DEM + slope + aspect(sin,cos)
-            x = np.dstack([rgb, ndsi[..., None], extra_stack])  # (H,W,8)
+            # Spectral stack
+            spec = np.dstack([green, red, nir, swir1, ndsi])
 
+            x = np.dstack([spec, extra_stack])   # (H, W, 9)
+            
             x_t = torch.from_numpy(np.transpose(x, (2,0,1))[None, ...]).to(DEVICE)
 
             with torch.no_grad():
                 logits = model(x_t)
-                prob = torch.sigmoid(logits)[0,0].cpu().numpy()
+                prob_t = torch.sigmoid(logits)
+                prob_t = F.interpolate(prob_t, size=(H, W), mode="bilinear", align_corners=False)
+                prob = prob_t[0,0].cpu().numpy()
+                ndsi_for_prob = crop_to_match(ndsi, prob)
+                mask = (prob >= 0.5) & (ndsi_for_prob > 0.35) & (dem_patch > 2000)
+            # QA mask (optional, but keep for now)
+            if "qa_pixel" in d:
+                qa_good = qa_good_from_qapixel(d["qa_pixel"])
+                prob = np.where(qa_good, prob, 0.0)
 
-            # Make slope match prob size
-            slope_for_prob = crop_to_match(slope_deg, prob)
+            # Thresholding – adjust after retraining!
+            # mask = prob >= 0.5
+            print("prob percentiles:", np.percentile(prob, [0,1,5,25,50,75,95,99,100]))
+            mask = clean_mask(mask, min_pixels=500)   # ~0.05 km² at 30 m
 
-            mask_core = prob >= 0.20
-            mask_expand = (prob >= 0.12) & (slope_for_prob <= 30)
-
-            mask = mask_core | mask_expand
-            mask = clean_mask(mask)
-
-            # --- meters per pixel (better if you later store px_w_m/px_h_m in meta) ---
+            # Measurements (unchanged)
             px_w_m, px_h_m = meters_per_pixel(meta, H, W)
-
             area_m2 = mask.sum() * (px_w_m * px_h_m)
             area_km2 = area_m2 / 1e6
             length_m, width_m = pca_length_width(mask, px_w_m, px_h_m)
 
+
             # Save outputs
-            out_dir = SCRIPT_DIR / "outputs" / YEARS[3]   # change YEARS[3] to the year you're processing
+            out_dir = SCRIPT_DIR / "outputs" / YEARS[2]   # change YEARS[2] to the year you're processing
             out_dir.mkdir(exist_ok=True)
 
             base_name = npz_path.stem.replace("_arrays", "")

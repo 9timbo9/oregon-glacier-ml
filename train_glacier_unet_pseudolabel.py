@@ -13,6 +13,7 @@ This trains a segmentation model:
   output 1 channel: glacier mask probability
 """
 
+# from curses import meta
 import os
 from pathlib import Path
 import numpy as np
@@ -42,17 +43,17 @@ DEM_PATH = SCRIPT_DIR / "data" /"DEM" / "output_hh.tif"
 USE_SLOPE = True  # set False if you only want DEM
 USE_ASPECT = True
 
-YEARS = ['1980','2000','2020','Wallowas']  
+YEARS = ['1980','2000','2020']  
 
 
-PATCH_DIR = SCRIPT_DIR / "patches"/ YEARS[3]  # change index to select year
+PATCH_DIR = SCRIPT_DIR / "patches"/ YEARS[2]  # change index to select year
 OUT_DIR   = SCRIPT_DIR / "models"
 OUT_DIR.mkdir(exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 BATCH_SIZE = 4
-LR = 1e-3
+LR = 3e-4
 RANDOM_CROP = 256          # training crop size (square); set None to use full image
 NDSI_THRESHOLD = 0.25
 MIN_OBJECT_PIXELS = 150
@@ -100,23 +101,18 @@ def robust_norm(x: np.ndarray, p1=2, p2=98) -> np.ndarray:
     y = (x - lo) / (hi - lo + 1e-6)
     return np.clip(y, 0, 1).astype(np.float32)
 
-def terrain_slope_aspect(dem_m: np.ndarray):
-    """
-    Returns:
-      slope_deg: float32
-      aspect_deg: float32 in [0,360)
-    Note: gradient uses pixel units; still very useful as relative terrain feature.
-    """
+def terrain_slope_aspect(dem_m: np.ndarray, px_w_m: float, px_h_m: float):
     dem = dem_m.copy()
     nanmask = np.isnan(dem)
     if nanmask.any():
         dem[nanmask] = np.nanmedian(dem)
 
-    dz_dy, dz_dx = np.gradient(dem)
+    # IMPORTANT: pass pixel spacing in meters
+    dz_dy, dz_dx = np.gradient(dem, px_h_m, px_w_m)
 
-    slope_deg = np.degrees(np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))).astype(np.float32)
+    slope_rad = np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))
+    slope_deg = np.degrees(slope_rad).astype(np.float32)
 
-    # Aspect (0 = north, 90 = east), common GIS convention-ish
     aspect_rad = np.arctan2(-dz_dx, dz_dy)
     aspect_deg = (np.degrees(aspect_rad) + 360) % 360
     aspect_deg = aspect_deg.astype(np.float32)
@@ -131,28 +127,27 @@ def aspect_to_sin_cos(aspect_deg: np.ndarray):
 # Utilities: pseudo-labels
 # ==========================
 
-def make_pseudolabel(ndsi: np.ndarray, qa_good: np.ndarray, t: float) -> np.ndarray:
-    """
-    Returns binary mask (H,W) uint8 where 1 = glacier candidate.
-    """
-    mask = (ndsi > t) & (qa_good.astype(bool))
+def make_pseudolabel(ndsi, qa_good, dem, slope, t=0.55, min_elev=2300, max_slope=35):
+    qa_good = qa_good.astype(bool)
 
-    # Clean up speckles / holes if scipy available
+    mask = (ndsi > t) & qa_good
+    mask &= (dem > min_elev)
+    # mask &= (slope < max_slope)
+
+    # cleanup
     if SCIPY_OK:
-        mask = ndi.binary_opening(mask, structure=np.ones((3, 3)))
-        mask = ndi.binary_closing(mask, structure=np.ones((5, 5)))
-        # remove small connected components
-        labeled, n = ndi.label(mask)
-        if n > 0:
-            counts = np.bincount(labeled.ravel())
-            # counts[0] is background
-            keep = np.zeros_like(counts, dtype=bool)
-            keep[counts >= MIN_OBJECT_PIXELS] = True
-            keep[0] = False
-            mask = keep[labeled]
-    else:
-        # If no scipy, keep it simple (still works; just noisier)
-        mask = mask
+        mask = ndi.binary_opening(mask, structure=np.ones((3,3)))
+        mask = ndi.binary_closing(mask, structure=np.ones((5,5)))
+
+    frac = mask.mean()
+
+    # ---- fallback guards ----
+    if frac < 0.0005:
+        # too strict -> relax slightly
+        mask = (ndsi > (t - 0.1)) & qa_good & (dem > (min_elev - 200)) & (slope < (max_slope + 5))
+    elif frac > 0.2:
+        # way too big -> tighten
+        mask = (ndsi > (t + 0.1)) & qa_good & (dem > (min_elev + 200)) & (slope < (max_slope - 5))
 
     return mask.astype(np.uint8)
 
@@ -211,8 +206,11 @@ class GlacierPatchDataset(Dataset):
         npz_path = self.paths[idx]
         d = np.load(npz_path)
 
-        rgb = d["rgb"].astype(np.float32)      # (H,W,3) in [0,1]
-        ndsi = d["ndsi"].astype(np.float32)    # (H,W)
+        green = d["green"].astype(np.float32)
+        red   = d["red"].astype(np.float32)
+        nir   = d["nir"].astype(np.float32)
+        swir1 = d["swir1"].astype(np.float32)
+        ndsi  = d["ndsi"].astype(np.float32)
         qa_good = d["qa_good"].astype(np.uint8)
 
         H, W = ndsi.shape
@@ -220,6 +218,8 @@ class GlacierPatchDataset(Dataset):
         # meta for this patch
         meta_path = npz_path.with_name(npz_path.name.replace("_arrays.npz", "_meta.txt"))
         meta = parse_meta_txt(meta_path)
+        px_w_m = meta.get("px_w_m", 30.0)
+        px_h_m = meta.get("px_h_m", 30.0)
 
         extras = []
 
@@ -228,8 +228,7 @@ class GlacierPatchDataset(Dataset):
             dem_norm = robust_norm(dem_patch)
             extras.append(dem_norm[..., None])
 
-            slope_deg, aspect_deg = terrain_slope_aspect(dem_patch)
-
+            slope_deg, aspect_deg = terrain_slope_aspect(dem_patch, px_w_m, px_h_m)
             if self.use_slope:
                 slope_norm = robust_norm(slope_deg)
                 extras.append(slope_norm[..., None])
@@ -247,10 +246,23 @@ class GlacierPatchDataset(Dataset):
         extra_stack = np.concatenate(extras, axis=2) if len(extras) > 1 else extras[0]
 
         # input: RGB + NDSI + extras
-        x = np.dstack([rgb, ndsi[..., None], extra_stack])  # (H,W,C)
+        spec = np.dstack([green, red, nir, swir1, ndsi[..., None]])  # (H,W,5)
+        x = np.dstack([spec, extra_stack])                           # (H,W, 5 + extras)
+        y = make_pseudolabel(ndsi, qa_good, dem_patch, slope_deg, self.ndsi_thresh).astype(np.uint8)
+        if idx == 0:  # only spam once
+            print("DEBUG pseudo:")
+            print("  ndsi min/mean/max:", float(ndsi.min()), float(ndsi.mean()), float(ndsi.max()))
+            print("  qa_good mean:", float(qa_good.astype(bool).mean()))
+            print("  dem min/mean/max:", float(np.nanmin(dem_patch)), float(np.nanmean(dem_patch)), float(np.nanmax(dem_patch)))
+            print("  slope min/mean/max:", float(slope_deg.min()), float(slope_deg.mean()), float(slope_deg.max()))
 
-        # pseudo-label
-        y = make_pseudolabel(ndsi, qa_good, self.ndsi_thresh).astype(np.uint8)
+            # show how many survive each filter
+            m0 = (ndsi > self.ndsi_thresh)
+            m1 = m0 & qa_good.astype(bool)
+            m2 = m1 & (dem_patch > 2300)          # <- match your thresholds
+            m3 = m2 & (slope_deg < 35)
+            print("  counts ndsi:", int(m0.sum()), "qa:", int(m1.sum()), "elev:", int(m2.sum()), "slope:", int(m3.sum()))
+        print("y positive fraction:", float(y.mean()))
 
         if self.crop_size is not None:
             x, y = self._random_crop(x, y, self.crop_size)
@@ -334,7 +346,8 @@ def dice_loss(logits, targets, eps=1e-6):
     return dice.mean()
 
 def bce_dice_loss(logits, targets):
-    bce = F.binary_cross_entropy_with_logits(logits, targets)
+    pos_weight = torch.tensor([5.0], device=DEVICE)  # try 3–10
+    bce = F.binary_cross_entropy_with_logits(logits, targets, pos_weight=pos_weight)
     d = dice_loss(logits, targets)
     return bce + d
 
@@ -344,7 +357,7 @@ def bce_dice_loss(logits, targets):
 # ==========================
 def main():
     npz_paths = []
-    for y in ["2000", "2020","Wallowas"]:  # change index to select different year(s)
+    for y in ["2020"]:  # change index to select different year(s)
         npz_paths += sorted((SCRIPT_DIR / "patches" / y).glob("patch_*_arrays.npz"))
 
     npz_paths = sorted(npz_paths)
@@ -366,8 +379,7 @@ def main():
     print("Input channels:", x0.shape[0])  # should print 8
     dl = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
 
-    in_ch = 4 + 1 + (1 if USE_SLOPE else 0) + (2 if USE_ASPECT else 0)
-    # 4 = RGB+NDSI, +1 DEM, +1 slope, +2 aspect(sin/cos) => 8
+    in_ch = 5 + 1 + (1 if USE_SLOPE else 0) + (2 if USE_ASPECT else 0)
     model = UNetSmall(in_ch=in_ch, out_ch=1, base=32).to(DEVICE)
 
     opt = torch.optim.Adam(model.parameters(), lr=LR)

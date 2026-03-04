@@ -11,9 +11,9 @@ from rasterio.crs import CRS
 # Paths
 # ===============================
 BASE_DIR = Path(__file__).resolve().parent
-YEARS = ['1980','2000','2020','Wallowas']  
+YEARS = ['1980','2000','2020']  
 DATA_DIR = BASE_DIR / "data"
-OUT_DIR  = BASE_DIR / "patches"/ YEARS[3] 
+OUT_DIR  = BASE_DIR / "patches"/ YEARS[2] 
 OUT_DIR.mkdir(exist_ok=True)
 
 
@@ -58,7 +58,7 @@ def find_files(year, sensor):
 
 
                 
-find_files(YEARS[3], "L8")  # Change index to select different year
+find_files(YEARS[2], "L8")  # Change index to select different year
         
 
 # ===============================
@@ -167,19 +167,27 @@ B5, _    = read_tif(files["B5"])  # SWIR1
 B7, _    = read_tif(files["B7"])  # SWIR2
 QA, _    = read_tif(files["QA"])  # QA_PIXEL (uint16 bitmask)
 
-# ===============================
-# RGB (true color)
-# ===============================
-rgb = np.dstack([B3, B2, B1]).astype(np.float32)
-rgb = (rgb - np.percentile(rgb, 2)) / (
-      np.percentile(rgb, 98) - np.percentile(rgb, 2) + 1e-6)
+scale = 0.0000275
+offset = -0.2
+
+BLUE  = B1.astype(np.float32) * scale + offset
+GREEN = B2.astype(np.float32) * scale + offset
+RED   = B3.astype(np.float32) * scale + offset
+NIR   = B4.astype(np.float32) * scale + offset
+SWIR1 = B5.astype(np.float32) * scale + offset
+
+BLUE  = np.clip(BLUE,  0, 1)
+GREEN = np.clip(GREEN, 0, 1)
+RED   = np.clip(RED,   0, 1)
+NIR   = np.clip(NIR,   0, 1)
+SWIR1 = np.clip(SWIR1, 0, 1)
+
+# RGB for viewing / saving thumbnails (optional)
+rgb = np.dstack([RED, GREEN, BLUE]).astype(np.float32)
 rgb = np.clip(rgb, 0, 1)
 
-# ===============================
-# Compute NDSI
-# ===============================
-ndsi = compute_ndsi(B2, B5)
-
+# NDSI from reflectance (recommended)
+ndsi = compute_ndsi(GREEN, SWIR1)
 # ===============================
 # Interactive patch picker loop
 # ===============================
@@ -217,6 +225,10 @@ while True:
     crop_rgb  = zoom_into_region(rgb,  prof, lat_min, lat_max, lon_min, lon_max)
     crop_ndsi = zoom_into_region(ndsi, prof, lat_min, lat_max, lon_min, lon_max)
     crop_qa   = zoom_into_region(QA,   prof, lat_min, lat_max, lon_min, lon_max)
+    crop_red   = zoom_into_region(RED,   prof, lat_min, lat_max, lon_min, lon_max)
+    crop_green = zoom_into_region(GREEN, prof, lat_min, lat_max, lon_min, lon_max)
+    crop_nir   = zoom_into_region(NIR,   prof, lat_min, lat_max, lon_min, lon_max)
+    crop_swir1 = zoom_into_region(SWIR1, prof, lat_min, lat_max, lon_min, lon_max)
 
     if crop_rgb is None or crop_ndsi is None or crop_qa is None:
         print("WARNING: crop region empty/outside image. Try clicking inside the valid swath.")
@@ -272,10 +284,14 @@ while True:
         # - qa_good: bool (H,W) "good pixels" mask
         np.savez_compressed(
             npz_path,
-            rgb=crop_rgb.astype(np.float32),
+            rgb=crop_rgb.astype(np.float32),   # if you still want it
+            red=crop_red.astype(np.float32),
+            green=crop_green.astype(np.float32),
+            nir=crop_nir.astype(np.float32),
+            swir1=crop_swir1.astype(np.float32),
             ndsi=crop_ndsi.astype(np.float32),
             qa_pixel=crop_qa.astype(np.uint16),
-            qa_good=crop_good.astype(np.uint8)  # store as 0/1 for portability
+            qa_good=crop_good.astype(np.uint8),
         )
 
         # meta = (
