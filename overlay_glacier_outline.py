@@ -18,10 +18,6 @@ MASK_DIR = SCRIPT_DIR / "outputs" / YEAR
 OUT_DIR = MASK_DIR / "outline_images"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-def load_rgb(npz_path):
-    d = np.load(npz_path)
-    rgb = d["rgb"].astype(np.float32)
-    return np.clip(rgb, 0, 1)
 
 def get_contours(mask, level=0.5, min_length=50):
     contours = measure.find_contours(mask.astype(float), level)
@@ -36,8 +32,28 @@ def save_overlay(rgb, contours, out_path, linewidth=2, color='red'):
     plt.tight_layout(pad=0)
     plt.savefig(out_path, bbox_inches='tight', pad_inches=0, dpi=300)
     plt.close(fig)
+    
+def stretch_rgb(rgb, p2=2, p98=98):
+    rgb = rgb.astype(np.float32)
+    out = np.empty_like(rgb, dtype=np.float32)
+    for i in range(3):
+        lo = np.percentile(rgb[..., i], p2)
+        hi = np.percentile(rgb[..., i], p98)
+        out[..., i] = np.clip((rgb[..., i] - lo) / (hi - lo + 1e-6), 0, 1)
+    return out
+
+def load_rgb(npz_path, gamma=0.85):
+    d = np.load(npz_path)
+    rgb = d["rgb"].astype(np.float32)
+    rgb = np.clip(rgb, 0, 1)
+
+    rgb = stretch_rgb(rgb, p2=2, p98=98)  # contrast stretch
+    rgb = np.clip(rgb ** gamma, 0, 1)     # brighten midtones
+
+    return rgb
 
 def main():
+    
     mask_files = sorted(MASK_DIR.glob("patch_*_mask.npy"))
     if not mask_files:
         print(f"No mask files in {MASK_DIR}")

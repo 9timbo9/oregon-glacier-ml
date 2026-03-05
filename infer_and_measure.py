@@ -301,16 +301,22 @@ def main():
             meta = parse_meta(meta_path)
             H, W = ndsi.shape
 
-            # DEM and derivatives
             dem_patch = sample_dem_to_patch(dem_src, meta, H, W)
-            dem_km = dem_patch / 1000.0
-            extras = [dem_km[..., None]]
-            px_w_m, px_h_m = meters_per_pixel(meta, H, W)
 
+            # use TRUE pixel sizes from meta, like training
+            px_w_m = meta.get("px_w_m", 30.0)
+            px_h_m = meta.get("px_h_m", 30.0)
+
+            # compute terrain
             slope_deg, aspect_deg = terrain_slope_aspect(dem_patch, px_w_m, px_h_m)
 
+            # IMPORTANT: normalize DEM + slope exactly like training
+            dem_norm = robust_norm(dem_patch)
+            slope_norm = robust_norm(slope_deg)
+
+            extras = [dem_norm[..., None]]
             if USE_SLOPE:
-                extras.append(slope_deg[..., None])
+                extras.append(slope_norm[..., None])
             if USE_ASPECT:
                 a_sin, a_cos = aspect_to_sin_cos(aspect_deg)
                 extras.append(a_sin[..., None])
@@ -318,11 +324,8 @@ def main():
 
             extra_stack = np.concatenate(extras, axis=2)
 
-            # Spectral stack
-            spec = np.dstack([green, red, nir, swir1, ndsi])
-
-            x = np.dstack([spec, extra_stack])   # (H, W, 9)
-            
+            spec = np.dstack([green, red, nir, swir1, ndsi[..., None]])  # note ndsi has [...,None]
+            x = np.dstack([spec, extra_stack])  # (H,W,9)            
             x_t = torch.from_numpy(np.transpose(x, (2,0,1))[None, ...]).to(DEVICE)
 
             with torch.no_grad():
@@ -331,7 +334,18 @@ def main():
                 prob_t = F.interpolate(prob_t, size=(H, W), mode="bilinear", align_corners=False)
                 prob = prob_t[0,0].cpu().numpy()
                 ndsi_for_prob = crop_to_match(ndsi, prob)
-                mask = (prob >= 0.5) & (ndsi_for_prob > 0.25) & (dem_patch > 2000)
+                if YEAR == "1980":
+                    PROB_T    = 0.35   # was 0.55
+                    NDSI_T    = 0.25   # was 0.35
+                    DEM_MIN   = 610   # was 2200
+                    SLOPE_MAX = 45     # was 35
+                else:
+                    PROB_T    = 0.22   # or THRESH if THRESH is already ~0.18–0.25
+                    NDSI_T    = 0.22   # was 0.25
+                    DEM_MIN   = 610   # was 2000
+                    SLOPE_MAX = 55     # was 90 (90 is basically off; 55 still allows a lot)
+
+                mask = (prob >= PROB_T) & (ndsi_for_prob > NDSI_T) & (dem_patch > DEM_MIN) & (slope_deg < SLOPE_MAX)
             # QA mask (optional, but keep for now)
             if "qa_pixel" in d:
                 qa_good = qa_good_from_qapixel(d["qa_pixel"])

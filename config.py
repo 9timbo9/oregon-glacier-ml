@@ -11,7 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # Years
 # --------------------------
 YEARS = ['1980', '2000', '2020']
-CURRENT_YEAR_IDX = 0         # change to 0, 1, or 2 as needed
+CURRENT_YEAR_IDX =  0       # change to 0, 1, or 2 as needed
 CURRENT_YEAR = YEARS[CURRENT_YEAR_IDX]
 LANDSATS = ['L5', 'L7', 'L8']
 LANDSAT = LANDSATS[CURRENT_YEAR_IDX]
