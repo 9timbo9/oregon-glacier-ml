@@ -25,6 +25,7 @@ from torch.utils.data import Dataset, DataLoader
 import rasterio
 from rasterio.warp import transform_bounds, reproject, Resampling
 from rasterio.transform import from_bounds
+from config import*
 
 # ---- optional: for mask cleanup (recommended) ----
 try:
@@ -43,10 +44,10 @@ DEM_PATH = SCRIPT_DIR / "data" /"DEM" / "output_hh.tif"
 USE_SLOPE = True  # set False if you only want DEM
 USE_ASPECT = True
 
-YEARS = ['1980','2000','2020']  
+  
 
 
-PATCH_DIR = SCRIPT_DIR / "patches"/ YEARS[2]  # change index to select year
+PATCH_DIR = SCRIPT_DIR / "patches"/ CURRENT_YEAR  # change index to select year
 OUT_DIR   = SCRIPT_DIR / "models"
 OUT_DIR.mkdir(exist_ok=True)
 
@@ -357,7 +358,7 @@ def bce_dice_loss(logits, targets):
 # ==========================
 def main():
     npz_paths = []
-    for y in ["2020"]:  # change index to select different year(s)
+    for y in ["1980", "2000", "2020"]:  # change index to select different year(s)
         npz_paths += sorted((SCRIPT_DIR / "patches" / y).glob("patch_*_arrays.npz"))
 
     npz_paths = sorted(npz_paths)

@@ -15,6 +15,7 @@ import torch.nn as nn
 import rasterio
 from rasterio.warp import transform_bounds, reproject, Resampling
 from rasterio.transform import from_bounds
+from config import*
 
 # optional: connected components cleanup
 try:
@@ -28,11 +29,13 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-YEARS = ['1980','2000','2020']  # add 'Wallowas' if you have those patches, otherwise just use the first three years
+# add 'Wallowas' if you have those patches, otherwise just use the first three years
+
+YEAR = CURRENT_YEAR   # change as needed
 
 MODEL_PATH = SCRIPT_DIR / "models" / "glacier_unet_pseudolabel.pt"
-NPZ_PATH   = SCRIPT_DIR / "patches" /YEARS[2]/ "patch_001_arrays.npz"
-META_PATH  = SCRIPT_DIR / "patches" /YEARS[2]/ "patch_001_meta.txt"
+NPZ_PATH   = SCRIPT_DIR / "patches" /YEAR/ "patch_001_arrays.npz"
+META_PATH  = SCRIPT_DIR / "patches" /YEAR/ "patch_001_meta.txt"
 
 DEM_PATH = SCRIPT_DIR / "data" /"DEM" / "output_hh.tif"
 USE_SLOPE = True
@@ -272,7 +275,7 @@ def main():
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
-    patch_files = sorted(SCRIPT_DIR.glob(f"patches/{YEARS[2]}/patch_*_arrays.npz"))
+    patch_files = sorted(SCRIPT_DIR.glob(f"patches/{YEAR}/patch_*_arrays.npz"))
     if not patch_files:
         print("No patch files found.")
         return
@@ -328,7 +331,7 @@ def main():
                 prob_t = F.interpolate(prob_t, size=(H, W), mode="bilinear", align_corners=False)
                 prob = prob_t[0,0].cpu().numpy()
                 ndsi_for_prob = crop_to_match(ndsi, prob)
-                mask = (prob >= 0.5) & (ndsi_for_prob > 0.35) & (dem_patch > 2000)
+                mask = (prob >= 0.5) & (ndsi_for_prob > 0.25) & (dem_patch > 2000)
             # QA mask (optional, but keep for now)
             if "qa_pixel" in d:
                 qa_good = qa_good_from_qapixel(d["qa_pixel"])
@@ -347,7 +350,7 @@ def main():
 
 
             # Save outputs
-            out_dir = SCRIPT_DIR / "outputs" / YEARS[2]   # change YEARS[2] to the year you're processing
+            out_dir = SCRIPT_DIR / "outputs" / YEAR   # change YEAR to the year you're processing
             out_dir.mkdir(exist_ok=True)
 
             base_name = npz_path.stem.replace("_arrays", "")

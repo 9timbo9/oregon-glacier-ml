@@ -2,6 +2,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import measure, transform
+from config import*
 
 try:
     from tqdm import tqdm
@@ -10,8 +11,8 @@ except:
     TQDM_OK = False
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-YEARS = ['1980','2000','2020']
-YEAR = YEARS[2]   # change as needed
+
+YEAR = CURRENT_YEAR   # change as needed
 
 MASK_DIR = SCRIPT_DIR / "outputs" / YEAR
 OUT_DIR = MASK_DIR / "outline_images"

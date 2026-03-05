@@ -5,22 +5,23 @@ import rasterio
 import matplotlib.pyplot as plt
 from rasterio.warp import transform as crs_transform
 from rasterio.crs import CRS
+from config import*
 
 
 # ===============================
 # Paths
 # ===============================
 BASE_DIR = Path(__file__).resolve().parent
-YEARS = ['1980','2000','2020']  
+  
 DATA_DIR = BASE_DIR / "data"
-OUT_DIR  = BASE_DIR / "patches"/ YEARS[2] 
+OUT_DIR  = BASE_DIR / "patches"/ CURRENT_YEAR 
 OUT_DIR.mkdir(exist_ok=True)
 
 
 files = {}
 
 def find_files(year, sensor):
-    if sensor == "L7":
+    if sensor == "L7" or sensor == "L5":
        for file in os.listdir(DATA_DIR / year):
         if file.endswith(".TIF"):
             if "SR_B1" in file:
@@ -58,7 +59,7 @@ def find_files(year, sensor):
 
 
                 
-find_files(YEARS[2], "L8")  # Change index to select different year
+find_files(CURRENT_YEAR, LANDSAT)  # Change index to select different year
         
 
 # ===============================
