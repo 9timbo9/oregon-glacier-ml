@@ -8,12 +8,9 @@ from rasterio.crs import CRS
 from config import*
 
 
-# ===============================
+
 # Paths
-# ===============================
-BASE_DIR = Path(__file__).resolve().parent
   
-DATA_DIR = BASE_DIR / "data"
 OUT_DIR  = BASE_DIR / "patches"/ CURRENT_YEAR 
 OUT_DIR.mkdir(exist_ok=True)
 
@@ -39,7 +36,7 @@ def find_files(year, sensor):
             elif "QA_PIXEL" in file:
                 files["QA"] = DATA_DIR /year /file
 # Landsat 8 has different band map, so we need to map them to the same keys (B1, B2, etc.) for consistency.
-    elif sensor == "L8":
+    elif sensor == "L8" or sensor == "L9":
         for file in os.listdir(DATA_DIR / year):
             if file.endswith(".TIF"):
                 if "SR_B2" in file:
@@ -62,9 +59,7 @@ def find_files(year, sensor):
 find_files(CURRENT_YEAR, LANDSAT)  # Change index to select different year
         
 
-# ===============================
 # Read TIF
-# ===============================
 def read_tif(path):
     path = str(path)
     if not os.path.exists(path):
@@ -74,17 +69,13 @@ def read_tif(path):
         prof = src.profile
     return arr, prof
 
-# ===============================
 # Pixel -> LatLon
-# ===============================
 def pixel_to_latlon(prof, col, row):
     x, y = prof["transform"] * (col, row)
     lon, lat = crs_transform(prof["crs"], "EPSG:4326", [x], [y])
     return lat[0], lon[0]
 
-# ===============================
 # Zoom into lat/lon region
-# ===============================
 def zoom_into_region(arr, prof, lat_min, lat_max, lon_min, lon_max):
     img_crs = prof["crs"]
     src_crs = CRS.from_epsg(4326)
@@ -123,18 +114,14 @@ def meters_per_pixel_from_transform(prof):
     e = prof["transform"].e      # y pixel size (negative)
     return float(abs(a)), float(abs(e))
 
-# ===============================
-# NDSI FUNCTION ⭐
-# ===============================
+# NDSI FUNCTION 
 def compute_ndsi(green, swir1):
     green = green.astype(np.float32)
     swir1 = swir1.astype(np.float32)
     eps = 1e-6
     return (green - swir1) / (green + swir1 + eps)
 
-# ===============================
 # QA_PIXEL decode helpers (Landsat C2 QA_PIXEL)
-# ===============================
 def bit_is_set(arr_uint, bit):
     """Return boolean mask where a given bit is 1."""
     return ((arr_uint >> bit) & 1).astype(bool)
@@ -157,9 +144,7 @@ def make_good_pixel_mask(qa_pixel):
     bad = fill | dilated_cloud | cloud | cloud_shadow
     return ~bad
 
-# ===============================
 # Load Landsat 7 bands + QA
-# ===============================
 B1, prof = read_tif(files["B1"])  # Blue
 B2, _    = read_tif(files["B2"])  # Green
 B3, _    = read_tif(files["B3"])  # Red
@@ -189,9 +174,7 @@ rgb = np.clip(rgb, 0, 1)
 
 # NDSI from reflectance (recommended)
 ndsi = compute_ndsi(GREEN, SWIR1)
-# ===============================
 # Interactive patch picker loop
-# ===============================
 print("\nInteractive patch picker:")
 print(" - Click a point on the RGB map to define a patch center")
 print(" - After preview, type 'y' to save, anything else to skip")

@@ -25,7 +25,6 @@ except Exception:
     SCIPY_OK = False
     
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 

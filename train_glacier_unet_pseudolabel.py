@@ -35,9 +35,7 @@ except Exception:
     SCIPY_OK = False
 
 
-# ==========================
 # Config
-# ==========================
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 DEM_PATH = SCRIPT_DIR / "data" /"DEM" / "output_hh.tif"  
@@ -124,9 +122,7 @@ def aspect_to_sin_cos(aspect_deg: np.ndarray):
     ang = np.deg2rad(aspect_deg.astype(np.float32))
     return np.sin(ang).astype(np.float32), np.cos(ang).astype(np.float32)
 
-# ==========================
 # Utilities: pseudo-labels
-# ==========================
 
 def make_pseudolabel(ndsi, qa_good, dem, slope, t=0.55, min_elev=2300, max_slope=35):
     qa_good = qa_good.astype(bool)
@@ -153,9 +149,7 @@ def make_pseudolabel(ndsi, qa_good, dem, slope, t=0.55, min_elev=2300, max_slope
     return mask.astype(np.uint8)
 
 
-# ==========================
 # Dataset
-# ==========================
 class GlacierPatchDataset(Dataset):
     def __init__(self, npz_paths, crop_size=256, ndsi_thresh=0.4, augment=True,
                  dem_path=None, use_slope=True, use_aspect=True):
@@ -275,9 +269,7 @@ class GlacierPatchDataset(Dataset):
         y = torch.from_numpy(y[None, ...].astype(np.float32))         # (1,H,W)
         return x, y
     
-# ==========================
 # Tiny U-Net
-# ==========================
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
@@ -336,9 +328,7 @@ class UNetSmall(nn.Module):
         return self.out(d1)
 
 
-# ==========================
 # Loss: BCE + Dice
-# ==========================
 def dice_loss(logits, targets, eps=1e-6):
     probs = torch.sigmoid(logits)
     num = 2 * (probs * targets).sum(dim=(2, 3))
@@ -353,9 +343,7 @@ def bce_dice_loss(logits, targets):
     return bce + d
 
 
-# ==========================
 # Train
-# ==========================
 def main():
     npz_paths = []
     for y in ["1980", "2000", "2020"]:  # change index to select different year(s)
